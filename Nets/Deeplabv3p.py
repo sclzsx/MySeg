@@ -46,7 +46,7 @@ class DeepLabV3Plus(nn.Module):
     DeepLab v3+: Dilated ResNet with multi-grid + improved ASPP + decoder
     """
 
-    def __init__(self, n_classes, n_blocks, atrous_rates, multi_grids, output_stride):
+    def __init__(self, num_classes, divisor=1, n_blocks=[3, 4, 23, 3], atrous_rates=[6, 12, 18], multi_grids=[1, 2, 4], output_stride=16):
         super(DeepLabV3Plus, self).__init__()
 
         # Stride and dilation
@@ -59,45 +59,56 @@ class DeepLabV3Plus(nn.Module):
 
         # Encoder
         ch = [64 * 2 ** p for p in range(6)]
-        self.layer1 = _Stem(ch[0])
-        self.layer2 = _ResLayer(n_blocks[0], ch[0], ch[2], s[0], d[0])
-        self.layer3 = _ResLayer(n_blocks[1], ch[2], ch[3], s[1], d[1])
-        self.layer4 = _ResLayer(n_blocks[2], ch[3], ch[4], s[2], d[2])
-        self.layer5 = _ResLayer(n_blocks[3], ch[4], ch[5], s[3], d[3], multi_grids)
-        self.aspp = _ASPP(ch[5], 256, atrous_rates)
+        self.layer1 = _Stem(ch[0]//divisor)
+        self.layer2 = _ResLayer(n_blocks[0], ch[0]//divisor, ch[2]//divisor, s[0], d[0])
+        self.layer3 = _ResLayer(n_blocks[1], ch[2]//divisor, ch[3]//divisor, s[1], d[1])
+        self.layer4 = _ResLayer(n_blocks[2], ch[3]//divisor, ch[4]//divisor, s[2], d[2])
+        self.layer5 = _ResLayer(n_blocks[3], ch[4]//divisor, ch[5]//divisor, s[3], d[3], multi_grids)
+        self.aspp = _ASPP(ch[5]//divisor, 256//divisor, atrous_rates)
         concat_ch = 256 * (len(atrous_rates) + 2)
-        self.add_module("fc1", _ConvBnReLU(concat_ch, 256, 1, 1, 0, 1))
+        self.add_module("fc1", _ConvBnReLU(concat_ch//divisor, 256//divisor, 1, 1, 0, 1))
 
         # Decoder
-        self.reduce = _ConvBnReLU(256, 48, 1, 1, 0, 1)
+        self.reduce = _ConvBnReLU(256//divisor, 48//divisor, 1, 1, 0, 1)
         self.fc2 = nn.Sequential(
             OrderedDict(
                 [
-                    ("conv1", _ConvBnReLU(304, 256, 3, 1, 1, 1)),
-                    ("conv2", _ConvBnReLU(256, 256, 3, 1, 1, 1)),
-                    ("conv3", nn.Conv2d(256, n_classes, kernel_size=1)),
+                    ("conv1", _ConvBnReLU(304//divisor, 256//divisor, 3, 1, 1, 1)),
+                    ("conv2", _ConvBnReLU(256//divisor, 256//divisor, 3, 1, 1, 1)),
+                    ("conv3", nn.Conv2d(256//divisor, num_classes, kernel_size=1)),
                 ]
             )
         )
 
-    def forward(self, x):
-        h = self.layer1(x)
-        h = self.layer2(h)
-        h_ = self.reduce(h)
-        h = self.layer3(h)
-        h = self.layer4(h)
-        h = self.layer5(h)
-        h = self.aspp(h)
+    def forward(self, x):#224
+        # print(x.shape)
+        h = self.layer1(x)#57
+        # print(h.shape)
+        h = self.layer2(h)#57
+        # print(h.shape)
+        h_ = self.reduce(h)#57
+        # print(h_.shape)
+        h = self.layer3(h)#29
+        # print(h.shape)
+        h = self.layer4(h)#15
+        # print(h.shape)
+        h = self.layer5(h)#15
+        # print(h.shape)
+        h = self.aspp(h)#15
+        # print(h.shape)
         h = self.fc1(h)
         h = F.interpolate(h, size=h_.shape[2:], mode="bilinear", align_corners=False)
+        # print(h.shape, h_.shape)
         h = torch.cat((h, h_), dim=1)
         h = self.fc2(h)
+        # print(h.shape)
         h = F.interpolate(h, size=x.shape[2:], mode="bilinear", align_corners=False)
+        # print(h.shape)
         return h
-
 
 try:
     from encoding.nn import SyncBatchNorm
+
     _BATCH_NORM = SyncBatchNorm
 except:
     _BATCH_NORM = nn.BatchNorm2d
@@ -193,21 +204,17 @@ class _Stem(nn.Sequential):
 
 
 if __name__ == "__main__":
-    model = DeepLabV3Plus(
-        n_classes=2,
-        n_blocks=[3, 4, 23, 3],
-        atrous_rates=[6, 12, 18],
-        multi_grids=[1, 2, 4],
-        output_stride=16,
-    )
-    model.eval()
-    image = torch.randn(1, 3, 513, 513)
+    from ptflops import get_model_complexity_info
 
-    print(model)
-    print("input:", image.shape)
-    print("output:", model(image).shape)
+    divisor = 1
+    # h = 1080 // 2 // 16 * 16
+    # w = 1920 // 2 // 16 * 16
+    h = 224
+    w = 224
 
-    # def print_model_parm_nums(model):
-    #     total = sum([param.nelement() for param in model.parameters()])
-    #     print('  + Number of params: %.2f(e6)' % (total / 1e6))
-    # print_model_parm_nums(model(image))
+    net = DeepLabV3Plus(num_classes=2, divisor=divisor).cuda()
+    image = (3, h, w)
+    f, p = get_model_complexity_info(net, image, as_strings=True, print_per_layer_stat=False, verbose=False)
+    print(f, p)
+    out = net(torch.randn(1, 3, h, w).cuda())
+    print(out.shape)

@@ -1,271 +1,281 @@
-import os
-import cv2
-import json
-import numpy as np
-from PIL import Image
 from pathlib import Path
 from argparse import ArgumentParser
-import matplotlib.pyplot as plt
-from sklearn.metrics import confusion_matrix
-
 import torch
-from torch.utils.data import DataLoader
-from torchvision import transforms
-import torch.nn.functional as F
-
-from dataset import SegDataset
+import json
 from choices import choose_net
+from predictor import qualitative_results_from_dataset, eval_dataset_full, predict_videos, predict_images
+from dataset import SegDataset, get_class_weights
+from torch.utils.data import DataLoader
+import cv2
+import os
+import xlwt
+import itertools
+from matplotlib import pyplot as plt
+import numpy as np
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def get_test_args():
+    parser = ArgumentParser()
+    parser.add_argument("--height", type=int)
+    parser.add_argument("--width", type=int)
+    parser.add_argument("--out-channels", type=int)
+    parser.add_argument("--erode", type=int)
+    parser.add_argument("--pt-dir", type=str)
+    parser.add_argument("--test-videos", type=str)
+    parser.add_argument("--test-set", type=str)
+    parser.add_argument("--test-images", type=str)
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--weighting", type=str, default='none')
+    parser.add_argument("--pt-root", type=str, default='./Results/')
+    parser.add_argument("--vis", type=bool, default=False)
+    return parser.parse_args()
 
 
 def find_latest_pt(dir):
     max_num = 0
     latest_path = ''
     for path in Path(dir).glob('*.pt'):
-        num = int(path.name.split('_')[1].split('.')[0])
+        num = int(path.name.split('_')[-1].split('.')[0])
         if num > max_num:
             max_num = num
             latest_path = str(path)
     if latest_path != '':
-        print('Loading:', latest_path)
         return latest_path
     else:
         print('No pts this dir:', dir)
         return None
 
 
-def calcuate_np_iou(y_pred, y_true, num_classes):
-    y_pred = y_pred.flatten()
-    y_true = y_true.flatten()
-    current = confusion_matrix(y_true, y_pred, labels=range(num_classes))
-    intersection = np.diag(current)  # 取混淆矩阵的对角线元素，即各类别tp的数量，各类别的交集的数量
-    ground_truth_set = current.sum(axis=1)  # 按列求和，各个类别的gt数
-    predicted_set = current.sum(axis=0)  # 按行求和，各个类别的pred数
-    union = ground_truth_set + predicted_set - intersection  # 各类别的并集的数量
-    IoU = intersection / union.astype(np.float32)  # 各类别的IoU
-    return IoU
-
-
-def add_mask_to_source(source_np, mask_np, color):
-    mask_bool = (np.ones(mask_np.shape, dtype='uint8') & mask_np).astype('bool')
-
-    foreground = np.zeros(source_np.shape, dtype='uint8')
-    for i in range(3):
-        foreground[:, :, i] = color[i]
-    foreground = cv2.addWeighted(source_np, 0.5, foreground, 0.5, 0)
-
-    background = source_np.copy()
-    for i in range(3):
-        foreground[:, :, i] *= mask_bool
-        background[:, :, i] *= (~mask_bool)
-
-    return background + foreground
-
-
-def predict_batch_data(net, out_channels, device, batch_data, batch_label, criterion, erode):
-    if batch_label is None:  # 针对图片或视频帧的预测，没有对应的label，随机生成一个和data等大的label
-        batch_label = torch.randn(1, out_channels, batch_data.shape[2], batch_data.shape[3])
-
-    assert batch_data.shape[0] == 1 and batch_label.shape[0] == 1  # 为方便显示和计算指标，只处理批次大小为1的数据
-
-    with torch.no_grad():
-        batch_data = batch_data.to(device)
-        batch_label = batch_label.to(device)
-        output = net(batch_data)
-
-        if batch_data.shape[3] != output.shape[3]:  # 通过H判定输出是否比输入小，主要针对deeplab系列，将输出上采样至输入大小
-            output = F.interpolate(output, size=(batch_data.shape[2], batch_data.shape[3]), mode="bilinear", align_corners=False)
-
-        if criterion is not None:
-            loss = criterion(output, batch_label).item()
-        else:
-            loss = 0
-
-        if out_channels == 1:
-            batch_label = batch_label.float()  # labels默认为long，通道为1时采用逻辑损失，需要data和label均为float
-            output = torch.sigmoid(output).squeeze().cpu()  # Sigmod回归后去掉批次维N
-            prediction_np = np.where(np.array(output) > 0.2, 1, 0)  # 阈值默认为0.5
-        else:
-            batch_label = batch_label.squeeze(1)  # 交叉熵损失需要去掉通道维C
-            prediction_np = np.array(torch.max(output.data, 1)[1].squeeze(0).cpu())  # 取最大值的索引作为标签，并去掉批次维N
-
-        if erode > 0:
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (erode, erode))
-            prediction_np = cv2.dilate(prediction_np.astype('uint8'), kernel)
-
-        data_np = np.array((batch_data.squeeze(0).permute((1, 2, 0))).cpu()) * 255
-        label_np = np.array(batch_label.squeeze().cpu())  # 同时去掉批次维N和通道维C（均为1）
-
-        return data_np, label_np, prediction_np, loss
-
-
-def vis_multi_plot(data_np, label_np, prediction_np, miou, pause=0.2):
-    plt.subplot(131)
-    plt.axis('off')
-    plt.imshow(data_np)
-    plt.title('Source', fontsize=10)
-
-    plt.subplot(132)
-    plt.axis('off')
-    plt.imshow(label_np)
-    plt.title('Label', fontsize=10)
-
-    plt.subplot(133)
-    plt.axis('off')
-    plt.imshow(prediction_np)
-    plt.title('Pred mIoU:' + str(miou), fontsize=10)
-
-    plt.pause(pause)
-
-
-def save_multi_plot(data_np, label_np, prediction_np, miou, save_path):
-    plt.subplot(131)
-    plt.axis('off')
-    plt.imshow(data_np)
-    plt.title('Source', fontsize=10)
-
-    plt.subplot(132)
-    plt.axis('off')
-    plt.imshow(label_np)
-    plt.title('Label', fontsize=10)
-
-    plt.subplot(133)
-    plt.axis('off')
-    plt.imshow(prediction_np)
-    plt.title('Pred mIoU:' + str(miou), fontsize=10)
-
-    plt.savefig(save_path, bbox_inches='tight')
-
-
-def predict_dataset(net, args):
-    test_set = SegDataset(args.testset, resize=args.resize, erode=args.erode)
-    test_dataloader = DataLoader(test_set, batch_size=1, shuffle=False, num_workers=0)
-
-    sum_ = 0
-    for i, (datas, labels) in enumerate(test_dataloader):
-        data_np, label_np, prediction_np, _ = predict_batch_data(net, args.out_channels, device, datas, labels, criterion=None, erode=args.erode)
-        IoUs = calcuate_np_iou(prediction_np, label_np, num_classes=args.out_channels)
-        miou = np.mean(IoUs)
-
-        if args.vis:
-            vis_multi_plot(data_np, label_np, prediction_np, miou, pause=0.2)
-
-        if i % 400 == 0:
-            # save_multi_plot(data_np, label_np, prediction_np, miou, save_path='./Results/' + args.pt_dir + '/' + str(i) + '.png')
-            print('Predicted the {}th image, its miou is {}'.format(i, miou))
-
-        sum_ += miou
-        # mean_ious.append(miou)
-
-
-    # for t in mean_ious:
-
-    # mean_iou = np.mean(mean_ious)
-    print('Mean IoU of the whole testing set is:', sum_, len(test_dataloader), '\n')
-
-    with open('./Results/' + args.pt_dir + '/Metrics.txt', 'w') as f:
-        for key, val in vars(args).items():
-            f.write(str(key))
-            f.write('\t')
-            f.write(str(val))
-            f.write('\n')
-        f.write(str(mean_iou))
-
-
-def predict_videos(net, args):
-    cap = cv2.VideoCapture(args.video_path)
-    total_frame_num = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    video_size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-
-    save_path = './Results/' + os.path.basename(args.video_path)[:-4] + '_' + args.pt_dir + '.avi'
-    out = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc('M', 'J', 'P', 'G'), fps, video_size)
-
-    for frame_idx in range(total_frame_num - 1):  # 抛弃最后一帧才能有效保存视频
-        if frame_idx % 100 == 0:
-            print('Processing frame [{}/{}]'.format(frame_idx, total_frame_num))
-        ret, frame_cv2 = cap.read()
-
-        # 将frame转为和data同样的类型
-        frame_pil = Image.fromarray(cv2.cvtColor(frame_cv2, cv2.COLOR_BGR2RGB))
-        if args.resize is not None:
-            transform = transforms.Compose([transforms.Resize(args.resize, interpolation=Image.NEAREST), transforms.ToTensor()])
-            frame_cv2 = cv2.resize(frame_cv2, (args.resize[1], args.resize[0]))
-        else:
-            transform = transforms.Compose([transforms.ToTensor()])
-        frame_tensor = (transform(frame_pil) / 255).unsqueeze(0).to(device)
-
-        _, _, prediction_np, _, _ = eval_batch_data(net, args.out_channels, device, frame_tensor, batch_label=None, criterion=None, erode=args.erode)
-
-        show_np = add_mask_to_source(frame_cv2, prediction_np, args.fg_color)
-
-        if args.vis:
-            plt.imshow(show_np)
-            plt.pause(0.5)
-
-        show_np = cv2.resize(show_np, video_size)
-        out.write(show_np)
-    out.release()
-    print('Already saved to:', save_path)
-
-
-def get_args():
-    parser = ArgumentParser()
-    parser.add_argument("--gpu", type=int, default=0)
-    parser.add_argument("--out-channels", type=int, default=2)
-    parser.add_argument("--erode", type=int, default=15)
-    parser.add_argument("--resize", type=tuple, default=(512, 512))
-    parser.add_argument("--pt-dir", type=str, default='')
-    parser.add_argument("--vis", type=bool, default=False)
-    parser.add_argument("--fg-color", type=list, default=[255, 158, 53])
-    parser.add_argument("--video_path", type=str, default='/workspace/DATA/adas/test.mp4')
-    parser.add_argument("--testset", type=str, default='/workspace/DATA/adas/road0717/test')
-    return parser.parse_args()
-
-
-def merge_args_from_json(args, resize, net_name, save_suffix):
-    json_path = './Results/' + net_name + '_' + save_suffix + '_size' + str(resize[0]) + '/args.json'
+def merge_args_from_train_json(args, json_path, verbose=False):
     if not os.path.exists(json_path):
         return args
+    with open(json_path, 'r') as f:
+        train_d = json.load(f)
+        if verbose:
+            print(train_d)
+    args.weighting = train_d['weighting']
+    args.dilate = train_d['erode']
+    args.net_name = train_d['net_name']
+    args.out_channels = train_d['out_channels']
+    args.save_suffix = train_d['save_suffix']
+    args.height = train_d['height']
+    args.width = train_d['width']
+    with open(json_path.replace('train_args', 'test_args'), 'w') as f:
+        d = vars(args)
+        json.dump(d, f, indent=2)
+    if verbose:
+        for k, v in d.items():
+            print(k, v)
+    return args
+
+
+def do_test(mode, args):
+    print('\nTesting: {}. ################################# Mode: {}'.format(args.pt_dir, mode))
+    pt_dir = args.pt_root + '/' + args.pt_dir
+    args = merge_args_from_train_json(args, json_path=pt_dir + '/train_args.json')
+    pt_path = find_latest_pt(pt_dir)
+    if pt_path is None:
+        return
+    print('Loading:', pt_path)
+    net = choose_net(args.net_name, args.out_channels).cuda()
+    net.load_state_dict(torch.load(pt_path))
+    net.eval()
+    test_loader, class_weights = None, None
+    if mode == 0 or mode == 1:
+        test_set = SegDataset(args.test_set, args.out_channels, appoint_size=(args.height, args.width), erode=0)
+        test_loader = DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=4)
+        class_weights = get_class_weights(test_loader, args.out_channels, args.weighting)
+
+    if mode == 0:
+        eval_dataset_full(net, args.out_channels, test_loader, class_weights=class_weights, save_dir=pt_dir)
+
+    if mode == 1:
+        qualitative_results_from_dataset(net, args, pause=0, save_dir=pt_dir)
+
+    elif mode == 2:
+        predict_videos(net, args, partial=True, save_vid=False, dst_size=(960, 540), save_dir=pt_dir)
+
+    elif mode == 3:
+        predict_videos(net, args, partial=False, save_vid=True, dst_size=(960, 540), save_dir='/workspace/')
+
+    elif mode == 4:
+        predict_images(net, args, dst_size=(960, 540), save_dir='/workspace/zhatu/')
+
+
+def do_search(args, task=2):
+    args.pt_root = './Results/'
+    pt_dirs = []
+
+    if task == 0:
+        args.test_videos = '/workspace/DATA/adas'
+        args.test_set = '/workspace/DATA/adas/road0814/test'
+        args.test_images = '/workspace/DATA/adas/hard_frames'
+        args.out_channels = 2
+        pt_dirs = [i.name for i in Path(args.pt_root).iterdir() if i.is_dir() and 'road' in i.name]
+
+    elif task == 1:
+        args.test_videos = '/workspace/DATA/adas'
+        args.test_set = '/workspace/DATA/adas/roadside0813/test'
+        args.test_images = '/workspace/DATA/adas/hard_frames'
+        args.out_channels = 3
+        pt_dirs = [i.name for i in Path(args.pt_root).iterdir() if i.is_dir() and 'roadside0817' in i.name]
+
+    elif task == 2:
+        args.test_videos = '/workspace/DATA/zhatu/videos/0807'
+        args.test_set = '/workspace/DATA/zhatu/zhatu0814/test'
+        args.test_images = '/workspace/DATA/zhatu/videos/0807/hard_frames'
+        args.out_channels = 2
+        pt_dirs = [i.name for i in Path(args.pt_root).iterdir() if i.is_dir() and 'zhatu' in i.name]
+
+    modes = [4]
+    for mode in modes:
+        for pt_dir in pt_dirs:
+            args.pt_dir = pt_dir
+            with torch.cuda.device(0):
+                try:
+                    do_test(mode, args)
+                except:
+                    print('Error happened!')
+                continue
+
+
+def do_diff(args, thresh_num=6, save_root='./temp_files', task=0):
+    if task == 0:
+        args.test_videos = '/workspace/DATA/adas'
+        args.test_set = '/workspace/DATA/adas/road0717/test'
+        args.test_images = '/workspace/DATA/adas/road0717/test/images'
+        base_pt_dir = './Results/good/road/lanenet0508_2_road0807_h640_w1152'
+        base_predicts, base_shows, base_frames = do_test(base_pt_dir, 5, args)
     else:
-        with open(json_path, 'r') as f:
-            json_dict = json.load(f)
-        args.out_channels = json_dict['out_channels']
-        args.erode = json_dict['erode']
-        args.resize = (json_dict['resize'][1], json_dict['resize'][0])
-        args.pt_dir = json_dict['net_name'] + '_' + json_dict['save_suffix'] + '_size' + str(args.resize[0])
-        return args
+        args.test_videos = '/workspace/DATA/zhatu/videos/0807'
+        args.test_set = '/workspace/DATA/zhatu/zhatu0806_withneg/test'
+        args.test_images = '/workspace/DATA/zhatu/zhatu0806_withneg/test/images'
+        base_pt_dir = './Results/good/zhatu/fcn_road0810_h512_w512'
+        base_predicts, base_shows, base_frames = do_test(base_pt_dir, 5, args)
+
+    all_diff_info = []
+    diff_pt_root = './Results/'
+    pt_dirs = [
+        'lanenet0508_2_road0813_h640_w1152',
+        'lanenet0508_road0813_h640_w1152',
+        'lanenet_mod_road0813_h640_w1152',
+        'lanenet0508_2_road0812_h720_w720',
+        'lanenet0508_road0812_h1024_w1024',
+        'lanenet_mod_road0812_h720_w720',
+        'lanenet0508_2_road0807_h640_w1152'
+    ]
+    for diff_pt_dir in pt_dirs:
+        tmp_predicts, tmp_shows, _ = do_test(diff_pt_root + diff_pt_dir, 5, args)
+        all_diff_info.append((diff_pt_dir, tmp_predicts, tmp_shows))
+
+    # from Nets.FCN_yb import FCNs_yb
+    # all_diff_info = []
+    # diff_pt_root = './Results/yb/'
+    # diff_pt_dirs = ['fcn-VGG-512-8']
+    # for diff_pt_dir in diff_pt_dirs:
+    #     args.appoint_size = (512, 512)
+    #     if 'VGG' in diff_pt_dir.split('-')[1]:
+    #         backbone = 'vgg'
+    #     else:
+    #         backbone = 'resnet18'
+    #     divisor = int(diff_pt_dir.split('-')[-1])
+    #     net = FCNs_yb(num_classes=2, backbone=backbone, divisor=divisor).cuda()
+    #     latest_pt = find_latest_pt(diff_pt_root + diff_pt_dir)
+    #     net.load_state_dict(torch.load(latest_pt, map_location='cuda:0'))
+    #     net.eval()
+    #     argsmode = 5
+    #     tmp_predicts, tmp_shows, _ = do_test_yb(args, net)
+    #     all_diff_info.append((diff_pt_dir, tmp_predicts, tmp_shows))
+
+    num_pred = len(base_predicts)
+    num_diff = len(all_diff_info)
+    print('Num of diffs:{}, num of images:{}'.format(num_diff, num_pred))
+    assert len(all_diff_info[0][1]) == num_pred
+    assert num_diff > 0
+    assert num_pred >= thresh_num
+    if not save_root:
+        os.makedirs(save_root)
+    diff_pixels = []
+    for i in range(num_pred):
+        base_pred = base_predicts[i]
+        diff_pixel_num = 0
+        for diff_info in all_diff_info:
+            diff_pred = diff_info[1][i]
+            diff = cv2.absdiff(base_pred, diff_pred)
+            diff[diff > 0] = 1
+            diff_pixel_num += diff.sum()
+        diff_pixels.append(diff_pixel_num)
+    adopt_idx = np.argsort(diff_pixels)[-thresh_num:]
+    print('Idx of the most different pred:', adopt_idx)
+    for idx in adopt_idx:
+        cv2.imwrite(save_root + '/frame_' + str(idx) + '.jpg', base_frames[idx])
+        cv2.imwrite(save_root + '/base_' + str(idx) + '.jpg', base_shows[idx])
+        for diff_info in all_diff_info:
+            diff_name = diff_info[0]
+            diff_show = diff_info[2][idx]
+            path = save_root + '/' + diff_name + '_' + str(idx) + '.jpg'
+            cv2.imwrite(path, diff_show)
 
 
-def do_test(args, test_mode):
-    print(vars(args))
-    with torch.cuda.device(args.gpu):
-        net_name = args.pt_dir.split('_road')[0]
-        net = choose_net(net_name, args.out_channels).to(device)
-        latest_pt = find_latest_pt('./Results/' + args.pt_dir)
-        if latest_pt is not None:
-            net.load_state_dict(torch.load(latest_pt))
-            net.eval()
-            if test_mode == 0:
-                predict_dataset(net, args)
-            elif test_mode == 1:
-                predict_videos(net, args)
+def write_excel_for_search(root='./Results', suffix='zhatu'):
+    workbook = xlwt.Workbook(encoding='utf-8')
+    worksheet = workbook.add_sheet(suffix)
+    worksheet.write(0, 0, 'id')
+    worksheet.write(0, 1, 'net_name')
+    worksheet.write(0, 2, 'height')
+    worksheet.write(0, 3, 'width')
+    worksheet.write(0, 4, 'GFLOPs')
+    worksheet.write(0, 5, 'MParams')
+    worksheet.write(0, 6, 'erode')
+    worksheet.write(0, 7, 'batch_size')
+    worksheet.write(0, 8, 'epoch')
+    worksheet.write(0, 9, 'avg_loss')
+    worksheet.write(0, 10, 'mIoU')
+    worksheet.write(0, 11, 'PA')
+
+    dirs = [i for i in Path(root).iterdir() if i.is_dir() and suffix in i.name]
+    for i, subdir in enumerate(dirs):
+        with open(root + '/' + subdir.name + '/train_args.json', 'r') as f:
+            dict = json.load(f)
+        net_name = dict['net_name']
+        h = dict['height']
+        w = dict['width']
+        erode = dict['erode']
+        bz = dict['batch_size']
+        pt_path = find_latest_pt(str(subdir))
+        if pt_path is not None:
+            epoch = int(pt_path.split('_')[-1].split('.')[0])
+            with open(root + '/' + subdir.name + '/metrics.json', 'r') as ff:
+                d = json.load(ff)
+                gflops = d['GFLOPs'].split(' ')[0]
+                mparams = d['Parameters'].split(' ')[0]
+                avg_loss = d['Average loss']
+                m_IOU = d['Mean IoU']
+                PA = d['Pixel accuracy']
         else:
-            print('No pts this dir! ', './Results/' + args.pt_dir)
+            epoch, gflops, mparams, avg_loss, m_IOU, PA = 0, 0, 0, 0, 0, 0
+
+        worksheet.write(i + 1, 0, i)
+        worksheet.write(i + 1, 1, net_name)
+        worksheet.write(i + 1, 2, h)
+        worksheet.write(i + 1, 3, w)
+        worksheet.write(i + 1, 4, gflops)
+        worksheet.write(i + 1, 5, mparams)
+        worksheet.write(i + 1, 6, erode)
+        worksheet.write(i + 1, 7, bz)
+        worksheet.write(i + 1, 8, epoch)
+        worksheet.write(i + 1, 9, avg_loss)
+        worksheet.write(i + 1, 10, m_IOU)
+        worksheet.write(i + 1, 11, PA)
+
+    workbook.save(suffix + '.xls')
 
 
 if __name__ == "__main__":
-    args = get_args()
+    args = get_test_args()
     search_experiment = True
 
     if search_experiment:
-        test_dir_suffix = 'road_0803'
-        resizes = [(224, 224), (320, 320)]
-        test_net_names = ['fcn', 'fcn8', 'enet', 'enet_mod', 'lanenet', 'lanenet_deconv', 'lanenet0508']
-        for test_net_name in test_net_names:
-            for resize in resizes:
-                merge_args_from_json(args, resize, test_net_name, test_dir_suffix)
-                do_test(args, test_mode=0)
+        do_search(args)
     else:
-        do_test(args, test_mode=0)
+        write_excel_for_search()

@@ -52,7 +52,7 @@ class InitialBlock(nn.Module):
             bias=bias)
 
         # Extension branch
-        self.ext_branch = nn.MaxPool2d(kernel_size, stride=2, padding=padding)
+        self.ext_branch = nn.MaxPool2d(2, stride=2)
 
         # Initialize batch normalization to be used after concatenation
         self.batch_norm = nn.BatchNorm2d(out_channels)
@@ -113,14 +113,14 @@ class RegularBottleneck(nn.Module):
 
     def __init__(self,
                  channels,
-                 internal_ratio=4,
+                 internal_ratio=2,
                  kernel_size=3,
                  padding=0,
                  dilation=1,
                  asymmetric=False,
                  dropout_prob=0,
                  bias=False,
-                 relu=True):
+                 relu=False):
         super().__init__()
 
         # Check in the internal_scale parameter is within the expected range
@@ -193,7 +193,7 @@ class RegularBottleneck(nn.Module):
                 stride=1,
                 bias=bias), nn.BatchNorm2d(channels), activation)
 
-        self.ext_regul = nn.Dropout2d(p=dropout_prob)
+        # self.ext_regul = nn.Dropout2d(p=dropout_prob)
 
         # PReLU layer to apply after adding the branches
         self.out_prelu = activation
@@ -206,7 +206,7 @@ class RegularBottleneck(nn.Module):
         ext = self.ext_conv1(x)
         ext = self.ext_conv2(ext)
         ext = self.ext_conv3(ext)
-        ext = self.ext_regul(ext)
+        # ext = self.ext_regul(ext)
 
         # Add main and extension branches
         out = main + ext
@@ -259,13 +259,13 @@ class DownsamplingBottleneck(nn.Module):
     def __init__(self,
                  in_channels,
                  out_channels,
-                 internal_ratio=4,
+                 internal_ratio=2,
                  kernel_size=3,
                  padding=0,
                  return_indices=False,
                  dropout_prob=0,
                  bias=False,
-                 relu=True):
+                 relu=False):
         super().__init__()
 
         # Store parameters that are needed later
@@ -287,10 +287,18 @@ class DownsamplingBottleneck(nn.Module):
 
         # Main branch - max pooling followed by feature map (channels) padding
         self.main_max1 = nn.MaxPool2d(
-            kernel_size,
+            2,
             stride=2,
-            padding=padding,
-            return_indices=return_indices)
+        )
+
+        # 1x1 expansion convolution
+        self.main_conv2 = nn.Sequential(
+            nn.Conv2d(
+                in_channels,
+                out_channels,
+                kernel_size=1,
+                stride=1,
+                bias=bias), nn.BatchNorm2d(out_channels), activation)
 
         # Extension branch - 2x2 convolution, followed by a regular, dilated or
         # asymmetric convolution, followed by another 1x1 convolution. Number
@@ -301,8 +309,9 @@ class DownsamplingBottleneck(nn.Module):
             nn.Conv2d(
                 in_channels,
                 internal_channels,
-                kernel_size=2,
+                kernel_size=3,
                 stride=2,
+                padding=1,
                 bias=bias), nn.BatchNorm2d(internal_channels), activation)
 
         # Convolution
@@ -310,9 +319,9 @@ class DownsamplingBottleneck(nn.Module):
             nn.Conv2d(
                 internal_channels,
                 internal_channels,
-                kernel_size=kernel_size,
+                kernel_size=3,
                 stride=1,
-                padding=padding,
+                padding=1,
                 bias=bias), nn.BatchNorm2d(internal_channels), activation)
 
         # 1x1 expansion convolution
@@ -324,41 +333,44 @@ class DownsamplingBottleneck(nn.Module):
                 stride=1,
                 bias=bias), nn.BatchNorm2d(out_channels), activation)
 
-        self.ext_regul = nn.Dropout2d(p=dropout_prob)
+        # self.ext_regul = nn.Dropout2d(p=dropout_prob)
 
         # PReLU layer to apply after concatenating the branches
         self.out_prelu = activation
 
     def forward(self, x):
         # Main branch shortcut
-        if self.return_indices:
-            main, max_indices = self.main_max1(x)
-        else:
-            main = self.main_max1(x)
+        # if self.return_indices:
+        #    main, max_indices = self.main_max1(x)
+        # else:
+        #    main = self.main_max1(x)
+        main = self.main_max1(x)
+        main = self.main_conv2(main)
 
         # Extension branch
         ext = self.ext_conv1(x)
         ext = self.ext_conv2(ext)
         ext = self.ext_conv3(ext)
-        ext = self.ext_regul(ext)
+        # ext = self.ext_regul(ext)
 
         # Main branch channel padding
-        n, ch_ext, h, w = ext.size()
-        ch_main = main.size()[1]
-        padding = torch.zeros(n, ch_ext - ch_main, h, w)
+        # n, ch_ext, h, w = ext.size()
+        # ch_main = main.size()[1]
+        # padding = torch.zeros(n, ch_ext - ch_main, h, w)
 
         # Before concatenating, check if main is on the CPU or GPU and
         # convert padding accordingly
-        if main.is_cuda:
-            padding = padding.cuda()
+        # if main.is_cuda:
+        #    padding = padding.cuda()
 
         # Concatenate
-        main = torch.cat((main, padding), 1)
+        # main = torch.cat((main, padding), 1)
 
         # Add main and extension branches
         out = main + ext
 
-        return self.out_prelu(out), max_indices
+        # return self.out_prelu(out), max_indices
+        return self.out_prelu(out)
 
 
 class UpsamplingBottleneck(nn.Module):
@@ -403,7 +415,7 @@ class UpsamplingBottleneck(nn.Module):
     def __init__(self,
                  in_channels,
                  out_channels,
-                 internal_ratio=4,
+                 internal_ratio=2,
                  kernel_size=3,
                  padding=0,
                  dropout_prob=0,
@@ -432,7 +444,8 @@ class UpsamplingBottleneck(nn.Module):
 
         # Remember that the stride is the same as the kernel_size, just like
         # the max pooling layers
-        self.main_unpool1 = nn.MaxUnpool2d(kernel_size=2)
+        # self.main_unpool1 = nn.MaxUnpool2d(kernel_size=2)
+        self.main_unsample1 = nn.ConvTranspose2d(out_channels, out_channels, kernel_size=2, stride=2)
 
         # Extension branch - 1x1 convolution, followed by a regular, dilated or
         # asymmetric convolution, followed by another 1x1 convolution. Number
@@ -449,10 +462,8 @@ class UpsamplingBottleneck(nn.Module):
             nn.ConvTranspose2d(
                 internal_channels,
                 internal_channels,
-                kernel_size=kernel_size,
+                kernel_size=2,
                 stride=2,
-                padding=padding,
-                output_padding=1,
                 bias=bias), nn.BatchNorm2d(internal_channels), activation)
 
         # 1x1 expansion convolution
@@ -461,161 +472,104 @@ class UpsamplingBottleneck(nn.Module):
                 internal_channels, out_channels, kernel_size=1, bias=bias),
             nn.BatchNorm2d(out_channels), activation)
 
-        self.ext_regul = nn.Dropout2d(p=dropout_prob)
+        # self.ext_regul = nn.Dropout2d(p=dropout_prob)
 
         # PReLU layer to apply after concatenating the branches
         self.out_prelu = activation
 
-    def forward(self, x, max_indices):
+    def forward(self, x):
         # Main branch shortcut
         main = self.main_conv1(x)
-        main = self.main_unpool1(main, max_indices)
+        main = self.main_unsample1(main)
         # Extension branch
         ext = self.ext_conv1(x)
         ext = self.ext_conv2(ext)
         ext = self.ext_conv3(ext)
-        ext = self.ext_regul(ext)
+        # ext = self.ext_regul(ext)
 
         # Add main and extension branches
         out = main + ext
 
         return self.out_prelu(out)
 
-
-class ENet(nn.Module):
-    """Generate the ENet model.
-
-    Keyword arguments:
-    - num_classes (int): the number of classes to segment.
-    - encoder_relu (bool, optional): When ``True`` ReLU is used as the
-    activation function in the encoder blocks/layers; otherwise, PReLU
-    is used. Default: False.
-    - decoder_relu (bool, optional): When ``True`` ReLU is used as the
-    activation function in the decoder blocks/layers; otherwise, PReLU
-    is used. Default: True.
-
-    """
-
-    def __init__(self, num_classes, divisor=1, encoder_relu=False, decoder_relu=True):
+from Nets.attentions import ChannelAttention, SpatialAttention
+class LaneNet_mod_cbam(nn.Module):
+    def __init__(self, num_classes):
         super().__init__()
 
-        self.initial_block = InitialBlock(3, 16 // divisor, padding=1, relu=encoder_relu)
+        self.initial_block = InitialBlock(3, 16, padding=1)
+        self.con1 = nn.Conv2d(16, 8, kernel_size=1)
 
         # Stage 1 - Encoder
-        self.downsample1_0 = DownsamplingBottleneck(
-            16 // divisor,
-            64 // divisor,
-            padding=1,
-            return_indices=True,
-            dropout_prob=0.01,
-            relu=encoder_relu)
-        self.regular1_1 = RegularBottleneck(
-            64 // divisor, padding=1, dropout_prob=0.01, relu=encoder_relu)
-        self.regular1_2 = RegularBottleneck(
-            64 // divisor, padding=1, dropout_prob=0.01, relu=encoder_relu)
-        self.regular1_3 = RegularBottleneck(
-            64 // divisor, padding=1, dropout_prob=0.01, relu=encoder_relu)
-        self.regular1_4 = RegularBottleneck(
-            64 // divisor, padding=1, dropout_prob=0.01, relu=encoder_relu)
+        self.downsample1_0 = DownsamplingBottleneck(8, 32, padding=1)
+        self.con2 = nn.Conv2d(32, 16, kernel_size=1)
+        self.regular1_1 = RegularBottleneck(16, padding=1)
+        self.regular1_2 = RegularBottleneck(16, padding=1)
+        self.regular1_3 = RegularBottleneck(16, padding=1)
+        self.regular1_4 = RegularBottleneck(16, padding=1)
+        self.con3 = nn.Conv2d(16, 8, kernel_size=3, padding=1)
+        self.ca1 = ChannelAttention(8, ratio=2)
+        self.sa1 = SpatialAttention()
 
         # Stage 2 - Encoder
-        self.downsample2_0 = DownsamplingBottleneck(
-            64 // divisor,
-            128 // divisor,
-            padding=1,
-            return_indices=True,
-            dropout_prob=0.1,
-            relu=encoder_relu)
-        self.regular2_1 = RegularBottleneck(
-            128 // divisor, padding=1, dropout_prob=0.1, relu=encoder_relu)
-        self.dilated2_2 = RegularBottleneck(
-            128 // divisor, dilation=2, padding=2, dropout_prob=0.1, relu=encoder_relu)
-        self.asymmetric2_3 = RegularBottleneck(
-            128 // divisor,
-            kernel_size=5,
-            padding=2,
-            asymmetric=True,
-            dropout_prob=0.1,
-            relu=encoder_relu)
-        self.dilated2_4 = RegularBottleneck(
-            128 // divisor, dilation=4, padding=4, dropout_prob=0.1, relu=encoder_relu)
-        self.regular2_5 = RegularBottleneck(
-            128 // divisor, padding=1, dropout_prob=0.1, relu=encoder_relu)
-        self.dilated2_6 = RegularBottleneck(
-            128 // divisor, dilation=8, padding=8, dropout_prob=0.1, relu=encoder_relu)
-        self.asymmetric2_7 = RegularBottleneck(
-            128 // divisor,
-            kernel_size=5,
-            asymmetric=True,
-            padding=2,
-            dropout_prob=0.1,
-            relu=encoder_relu)
-        self.dilated2_8 = RegularBottleneck(
-            128 // divisor, dilation=16, padding=16, dropout_prob=0.1, relu=encoder_relu)
-
-        # Stage 3 - Encoder
-        self.regular3_0 = RegularBottleneck(
-            128 // divisor, padding=1, dropout_prob=0.1, relu=encoder_relu)
-        self.dilated3_1 = RegularBottleneck(
-            128 // divisor, dilation=2, padding=2, dropout_prob=0.1, relu=encoder_relu)
-        self.asymmetric3_2 = RegularBottleneck(
-            128 // divisor,
-            kernel_size=5,
-            padding=2,
-            asymmetric=True,
-            dropout_prob=0.1,
-            relu=encoder_relu)
-        self.dilated3_3 = RegularBottleneck(
-            128 // divisor, dilation=4, padding=4, dropout_prob=0.1, relu=encoder_relu)
-        self.regular3_4 = RegularBottleneck(
-            128 // divisor, padding=1, dropout_prob=0.1, relu=encoder_relu)
-        self.dilated3_5 = RegularBottleneck(
-            128 // divisor, dilation=8, padding=8, dropout_prob=0.1, relu=encoder_relu)
-        self.asymmetric3_6 = RegularBottleneck(
-            128 // divisor,
-            kernel_size=5,
-            asymmetric=True,
-            padding=2,
-            dropout_prob=0.1,
-            relu=encoder_relu)
-        self.dilated3_7 = RegularBottleneck(
-            128 // divisor, dilation=16, padding=16, dropout_prob=0.1, relu=encoder_relu)
+        self.downsample2_0 = DownsamplingBottleneck(8, 64, padding=1)
+        self.con4 = nn.Conv2d(64, 32, kernel_size=1)
+        self.regular2_1 = RegularBottleneck(32, padding=1)
+        self.dilated2_2 = RegularBottleneck(32, dilation=2, padding=2)
+        self.asymmetric2_3 = RegularBottleneck(32, kernel_size=5, padding=2, asymmetric=True)
+        self.dilated2_4 = RegularBottleneck(32, dilation=4, padding=4)
+        self.regular2_5 = RegularBottleneck(32, padding=1)
+        self.dilated2_6 = RegularBottleneck(32, dilation=8, padding=8)
+        self.asymmetric2_7 = RegularBottleneck(32, kernel_size=5, asymmetric=True, padding=2)
+        self.dilated2_8 = RegularBottleneck(32, dilation=16, padding=16)
+        self.con5 = nn.Conv2d(32, 64, kernel_size=1)
+        self.ca2 = ChannelAttention(64, ratio=4)
+        self.sa2 = SpatialAttention()
 
         # Stage 4 - Decoder
-        self.upsample4_0 = UpsamplingBottleneck(
-            128 // divisor, 64 // divisor, padding=1, dropout_prob=0.1, relu=decoder_relu)
-        self.regular4_1 = RegularBottleneck(
-            64 // divisor, padding=1, dropout_prob=0.1, relu=decoder_relu)
-        self.regular4_2 = RegularBottleneck(
-            64 // divisor, padding=1, dropout_prob=0.1, relu=decoder_relu)
+        self.upsample4_0 = UpsamplingBottleneck(64, 32, padding=1)
+        self.con6 = nn.Conv2d(32, 16, kernel_size=1)
+        self.regular4_1 = RegularBottleneck(16, padding=1)
+        self.regular4_2 = RegularBottleneck(16, padding=1)
 
-        # Stage 5 - Decoder
-        self.upsample5_0 = UpsamplingBottleneck(
-            64 // divisor, 16 // divisor, padding=1, dropout_prob=0.1, relu=decoder_relu)
-        self.regular5_1 = RegularBottleneck(
-            16 // divisor, padding=1, dropout_prob=0.1, relu=decoder_relu)
-        self.transposed_conv = nn.ConvTranspose2d(
-            16 // divisor,
-            num_classes,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            output_padding=1,
-            bias=False)
+        # deconv1_down
+        self.conv_out = nn.Sequential(
+            nn.Conv2d(16, 32, kernel_size=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+        )
+
+        # deconv2
+        self.deconv2 = nn.Sequential(
+            nn.ConvTranspose2d(32, 16, kernel_size=2, stride=2, padding=0, bias=True),
+            nn.BatchNorm2d(16),
+            nn.ReLU()  # (nB, 128, 36, 100)
+        )
+
+        # deconv3
+        self.deconv3 = nn.Sequential(
+            nn.ConvTranspose2d(16, num_classes, kernel_size=2, stride=2, padding=0, bias=True),
+        )
 
     def forward(self, x):
         # Initial block
         x = self.initial_block(x)
+        x = self.con1(x)
 
         # Stage 1 - Encoder
-        x, max_indices1_0 = self.downsample1_0(x)
+        x = self.downsample1_0(x)
+        x = self.con2(x)
         x = self.regular1_1(x)
         x = self.regular1_2(x)
         x = self.regular1_3(x)
         x = self.regular1_4(x)
+        x = self.con3(x)
+        x = self.ca1(x) * x
+        x = self.sa1(x) * x
 
         # Stage 2 - Encoder
-        x, max_indices2_0 = self.downsample2_0(x)
+        x = self.downsample2_0(x)
+        x = self.con4(x)
         x = self.regular2_1(x)
         x = self.dilated2_2(x)
         x = self.asymmetric2_3(x)
@@ -624,26 +578,20 @@ class ENet(nn.Module):
         x = self.dilated2_6(x)
         x = self.asymmetric2_7(x)
         x = self.dilated2_8(x)
-
-        # Stage 3 - Encoder
-        x = self.regular3_0(x)
-        x = self.dilated3_1(x)
-        x = self.asymmetric3_2(x)
-        x = self.dilated3_3(x)
-        x = self.regular3_4(x)
-        x = self.dilated3_5(x)
-        x = self.asymmetric3_6(x)
-        x = self.dilated3_7(x)
+        x = self.con5(x)
+        x = self.ca2(x) * x
+        x = self.sa2(x) * x
 
         # Stage 4 - Decoder
-        x = self.upsample4_0(x, max_indices2_0)
+        x = self.upsample4_0(x)
+        x = self.con6(x)
         x = self.regular4_1(x)
         x = self.regular4_2(x)
 
         # Stage 5 - Decoder
-        x = self.upsample5_0(x, max_indices1_0)
-        x = self.regular5_1(x)
-        x = self.transposed_conv(x)
+        x = self.conv_out(x)
+        x = self.deconv2(x)
+        x = self.deconv3(x)
 
         return x
 
@@ -651,12 +599,13 @@ class ENet(nn.Module):
 if __name__ == '__main__':
     from ptflops import get_model_complexity_info
 
-    down = 3
-    divisor = 1
+    down = 2
     h = int(1080 / down) // 16 * 16
     w = int(1920 / down) // 16 * 16
+    # h = 640
+    # w = 1152
 
-    net = ENet(num_classes=2, divisor=divisor).cuda()
+    net = LaneNet_mod_cbam(num_classes=3).cuda()
     image = (3, h, w)
     f, p = get_model_complexity_info(net, image, as_strings=True, print_per_layer_stat=False, verbose=False)
     print(f, p)

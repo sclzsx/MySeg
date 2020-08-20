@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from torchvision import models
 from torchvision.models.vgg import VGG
+from Nets.resnet import resnet18
 
 
 class FCN32s(nn.Module):
@@ -109,32 +110,48 @@ class FCN8s(nn.Module):
         return score
 
 
-class FCNs(nn.Module):
-    def __init__(self, num_classes, divisor=1):
+class FCNs_yb(nn.Module):
+    def __init__(self, num_classes, backbone='vgg', divisor=1):
         super().__init__()
         self.num_classes = num_classes
+        if backbone == 'vgg':
+            if divisor == 1:
+                self.pretrained_net = VGGNet(pretrained=False, model='vgg16')
+            elif divisor == 2:
+                self.pretrained_net = VGGNet(pretrained=False, model='vgg16_half')
+            elif divisor == 4:
+                self.pretrained_net = VGGNet(pretrained=False, model='vgg16_quarter')
+            elif divisor == 8:
+                self.pretrained_net = VGGNet(pretrained=False, model='vgg16_eighth')
 
-        if divisor == 1:
-            self.pretrained_net = VGGNet(pretrained=True, model='vgg16')
-        elif divisor == 2:
-            self.pretrained_net = VGGNet(pretrained=False, model='vgg16_half')
-        elif divisor == 4:
-            self.pretrained_net = VGGNet(pretrained=False, model='vgg16_quarter')
-        elif divisor == 8:
-            self.pretrained_net = VGGNet(pretrained=False, model='vgg16_eighth')
+            self.relu = nn.ReLU(inplace=True)
+            self.deconv1 = nn.ConvTranspose2d(512 // divisor, 512 // divisor, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+            self.bn1 = nn.BatchNorm2d(512 // divisor)
+            self.deconv2 = nn.ConvTranspose2d(512 // divisor, 256 // divisor, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+            self.bn2 = nn.BatchNorm2d(256 // divisor)
+            self.deconv3 = nn.ConvTranspose2d(256 // divisor, 128 // divisor, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+            self.bn3 = nn.BatchNorm2d(128 // divisor)
+            self.deconv4 = nn.ConvTranspose2d(128 // divisor, 64 // divisor, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+            self.bn4 = nn.BatchNorm2d(64 // divisor)
+            self.deconv5 = nn.ConvTranspose2d(64 // divisor, 32 // divisor, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+            self.bn5 = nn.BatchNorm2d(32 // divisor)
+            self.classifier = nn.Conv2d(32 // divisor, num_classes, kernel_size=1)
+        else:
+            channels = [64 * 2 ** i // divisor for i in range(4)]
+            self.pretrained_net = eval(backbone + '(channels=channels)')
 
-        self.relu = nn.ReLU(inplace=True)
-        self.deconv1 = nn.ConvTranspose2d(512 // divisor, 512 // divisor, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
-        self.bn1 = nn.BatchNorm2d(512 // divisor)
-        self.deconv2 = nn.ConvTranspose2d(512 // divisor, 256 // divisor, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
-        self.bn2 = nn.BatchNorm2d(256 // divisor)
-        self.deconv3 = nn.ConvTranspose2d(256 // divisor, 128 // divisor, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
-        self.bn3 = nn.BatchNorm2d(128 // divisor)
-        self.deconv4 = nn.ConvTranspose2d(128 // divisor, 64 // divisor, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
-        self.bn4 = nn.BatchNorm2d(64 // divisor)
-        self.deconv5 = nn.ConvTranspose2d(64 // divisor, 32 // divisor, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
-        self.bn5 = nn.BatchNorm2d(32 // divisor)
-        self.classifier = nn.Conv2d(32 // divisor, num_classes, kernel_size=1)
+            self.relu = nn.ReLU(inplace=True)
+            self.deconv1 = nn.ConvTranspose2d(channels[3], channels[2], kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+            self.bn1 = nn.BatchNorm2d(channels[2])
+            self.deconv2 = nn.ConvTranspose2d(channels[2], channels[1], kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+            self.bn2 = nn.BatchNorm2d(channels[1])
+            self.deconv3 = nn.ConvTranspose2d(channels[1], channels[0], kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+            self.bn3 = nn.BatchNorm2d(channels[0])
+            self.deconv4 = nn.ConvTranspose2d(channels[0], channels[0], kernel_size=3, stride=1, padding=1, dilation=1, output_padding=0)
+            self.bn4 = nn.BatchNorm2d(channels[0])
+            self.deconv5 = nn.ConvTranspose2d(channels[0], channels[0] // 2, kernel_size=3, stride=2, padding=1, dilation=1, output_padding=1)
+            self.bn5 = nn.BatchNorm2d(channels[0] // 2)
+            self.classifier = nn.Conv2d(channels[0] // 2, num_classes, kernel_size=1)
         # classifier is 1x1 conv, to reduce channels from 32 to n_class
 
     def forward(self, x):
@@ -228,7 +245,12 @@ def make_layers(cfg, batch_norm=False):
         if v == 'M':
             layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
         else:
-            conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=1)
+            # conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=1)
+            conv2d = nn.Sequential(                 # 1x1卷积
+                nn.Conv2d(in_channels, v//4, kernel_size=1),
+                nn.Conv2d(v//4, v//4, kernel_size=3, padding=1),
+                nn.Conv2d(v//4, v, kernel_size=1)
+            )
             if batch_norm:
                 layers += [conv2d, nn.BatchNorm2d(v), nn.ReLU(inplace=True)]
             else:
@@ -237,58 +259,15 @@ def make_layers(cfg, batch_norm=False):
     return nn.Sequential(*layers)
 
 
-'''
-VGG-16网络参数
-
-Sequential(
-  (0): Conv2d(3, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-  (1): ReLU(inplace)
-  (2): Conv2d(64, 64, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-  (3): ReLU(inplace)
-  (4): MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
-  (5): Conv2d(64, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-  (6): ReLU(inplace)
-  (7): Conv2d(128, 128, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-  (8): ReLU(inplace)
-  (9): MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
-  (10): Conv2d(128, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-  (11): ReLU(inplace)
-  (12): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-  (13): ReLU(inplace)
-  (14): Conv2d(256, 256, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-  (15): ReLU(inplace)
-  (16): MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
-  (17): Conv2d(256, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-  (18): ReLU(inplace)
-  (19): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-  (20): ReLU(inplace)
-  (21): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-  (22): ReLU(inplace)
-  (23): MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
-  (24): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-  (25): ReLU(inplace)
-  (26): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-  (27): ReLU(inplace)
-  (28): Conv2d(512, 512, kernel_size=(3, 3), stride=(1, 1), padding=(1, 1))
-  (29): ReLU(inplace)
-  (30): MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False)
-)
-
-'''
-
 if __name__ == '__main__':
     from ptflops import get_model_complexity_info
 
-    divisor = 1
-    h = 1080 // 4 // 16 * 16
-    w = 1920 // 4 // 16 * 16
+    divisor = 2
+    w = h = 512
 
-    h = 512
-    w = 512
-    print('h:{}, w:{}'.format(h, w))
-    net = FCNs(num_classes=2, divisor=divisor).cuda()
+    net = FCNs_yb(num_classes=2, backbone='resnet18', divisor=divisor)
     image = (3, h, w)
     f, p = get_model_complexity_info(net, image, as_strings=True, print_per_layer_stat=False, verbose=False)
     print(f, p)
-    out = net(torch.randn(1, 3, h, w).cuda())
+    out = net(torch.randn(1, 3, h, w))
     print(out.shape)

@@ -193,7 +193,7 @@ class RegularBottleneck(nn.Module):
                 stride=1,
                 bias=bias), nn.BatchNorm2d(channels), activation)
 
-        #self.ext_regul = nn.Dropout2d(p=dropout_prob)
+        # self.ext_regul = nn.Dropout2d(p=dropout_prob)
 
         # PReLU layer to apply after adding the branches
         self.out_prelu = activation
@@ -206,7 +206,7 @@ class RegularBottleneck(nn.Module):
         ext = self.ext_conv1(x)
         ext = self.ext_conv2(ext)
         ext = self.ext_conv3(ext)
-        #ext = self.ext_regul(ext)
+        # ext = self.ext_regul(ext)
 
         # Add main and extension branches
         out = main + ext
@@ -289,7 +289,7 @@ class DownsamplingBottleneck(nn.Module):
         self.main_max1 = nn.MaxPool2d(
             2,
             stride=2,
-            )
+        )
 
         # 1x1 expansion convolution
         self.main_conv2 = nn.Sequential(
@@ -333,16 +333,16 @@ class DownsamplingBottleneck(nn.Module):
                 stride=1,
                 bias=bias), nn.BatchNorm2d(out_channels), activation)
 
-        #self.ext_regul = nn.Dropout2d(p=dropout_prob)
+        # self.ext_regul = nn.Dropout2d(p=dropout_prob)
 
         # PReLU layer to apply after concatenating the branches
         self.out_prelu = activation
 
     def forward(self, x):
         # Main branch shortcut
-        #if self.return_indices:
+        # if self.return_indices:
         #    main, max_indices = self.main_max1(x)
-        #else:
+        # else:
         #    main = self.main_max1(x)
         main = self.main_max1(x)
         main = self.main_conv2(main)
@@ -351,26 +351,27 @@ class DownsamplingBottleneck(nn.Module):
         ext = self.ext_conv1(x)
         ext = self.ext_conv2(ext)
         ext = self.ext_conv3(ext)
-        #ext = self.ext_regul(ext)
+        # ext = self.ext_regul(ext)
 
         # Main branch channel padding
-        #n, ch_ext, h, w = ext.size()
-        #ch_main = main.size()[1]
-        #padding = torch.zeros(n, ch_ext - ch_main, h, w)
+        # n, ch_ext, h, w = ext.size()
+        # ch_main = main.size()[1]
+        # padding = torch.zeros(n, ch_ext - ch_main, h, w)
 
         # Before concatenating, check if main is on the CPU or GPU and
         # convert padding accordingly
-        #if main.is_cuda:
+        # if main.is_cuda:
         #    padding = padding.cuda()
 
         # Concatenate
-        #main = torch.cat((main, padding), 1)
+        # main = torch.cat((main, padding), 1)
 
         # Add main and extension branches
         out = main + ext
 
-        #return self.out_prelu(out), max_indices
+        # return self.out_prelu(out), max_indices
         return self.out_prelu(out)
+
 
 class UpsamplingBottleneck(nn.Module):
     """The upsampling bottlenecks upsample the feature map resolution using max
@@ -443,8 +444,8 @@ class UpsamplingBottleneck(nn.Module):
 
         # Remember that the stride is the same as the kernel_size, just like
         # the max pooling layers
-        #self.main_unpool1 = nn.MaxUnpool2d(kernel_size=2)
-        self.main_unsample1 = nn.ConvTranspose2d(out_channels, out_channels, kernel_size=2,stride=2)
+        # self.main_unpool1 = nn.MaxUnpool2d(kernel_size=2)
+        self.main_unsample1 = nn.ConvTranspose2d(out_channels, out_channels, kernel_size=2, stride=2)
 
         # Extension branch - 1x1 convolution, followed by a regular, dilated or
         # asymmetric convolution, followed by another 1x1 convolution. Number
@@ -471,7 +472,7 @@ class UpsamplingBottleneck(nn.Module):
                 internal_channels, out_channels, kernel_size=1, bias=bias),
             nn.BatchNorm2d(out_channels), activation)
 
-        #self.ext_regul = nn.Dropout2d(p=dropout_prob)
+        # self.ext_regul = nn.Dropout2d(p=dropout_prob)
 
         # PReLU layer to apply after concatenating the branches
         self.out_prelu = activation
@@ -484,7 +485,7 @@ class UpsamplingBottleneck(nn.Module):
         ext = self.ext_conv1(x)
         ext = self.ext_conv2(ext)
         ext = self.ext_conv3(ext)
-        #ext = self.ext_regul(ext)
+        # ext = self.ext_regul(ext)
 
         # Add main and extension branches
         out = main + ext
@@ -493,41 +494,28 @@ class UpsamplingBottleneck(nn.Module):
 
 
 class LaneNet0508(nn.Module):
-    """Generate the ENet model.
-
-    Keyword arguments:
-    - num_classes (int): the number of classes to segment.
-    - encoder_relu (bool, optional): When ``True`` ReLU is used as the
-    activation function in the encoder blocks/layers; otherwise, PReLU
-    is used. Default: False.
-    - decoder_relu (bool, optional): When ``True`` ReLU is used as the
-    activation function in the decoder blocks/layers; otherwise, PReLU
-    is used. Default: True.
-
-    """
-
-    def __init__(self, num_classes):
+    def __init__(self, num_classes, divisor=1):
         super().__init__()
 
-        self.initial_block = InitialBlock(3, 16, padding=1)
+        self.initial_block = InitialBlock(3, 16 // divisor, padding=1)
 
         # Stage 1 - Encoder
-        self.downsample1_0 = DownsamplingBottleneck(16,32, padding=1)
-        self.regular1_1 = RegularBottleneck(32, padding=1)
-        self.regular1_2 = RegularBottleneck(32, padding=1)
-        self.regular1_3 = RegularBottleneck(32, padding=1)
-        self.regular1_4 = RegularBottleneck(32, padding=1)
+        self.downsample1_0 = DownsamplingBottleneck(16 // divisor, 32 // divisor, padding=1)
+        self.regular1_1 = RegularBottleneck(32 // divisor, padding=1)
+        self.regular1_2 = RegularBottleneck(32 // divisor, padding=1)
+        self.regular1_3 = RegularBottleneck(32 // divisor, padding=1)
+        self.regular1_4 = RegularBottleneck(32 // divisor, padding=1)
 
         # Stage 2 - Encoder
-        self.downsample2_0 = DownsamplingBottleneck(32,64, padding=1)
-        self.regular2_1 = RegularBottleneck(64, padding=1)
-        self.dilated2_2 = RegularBottleneck(64, dilation=2, padding=2)
-        self.asymmetric2_3 = RegularBottleneck(64,kernel_size=5,padding=2,asymmetric=True)
-        self.dilated2_4 = RegularBottleneck(64, dilation=4, padding=4)
-        self.regular2_5 = RegularBottleneck(64, padding=1)
-        self.dilated2_6 = RegularBottleneck(64, dilation=8, padding=8)
-        self.asymmetric2_7 = RegularBottleneck(64,kernel_size=5,asymmetric=True,padding=2)
-        self.dilated2_8 = RegularBottleneck(64, dilation=16, padding=16)
+        self.downsample2_0 = DownsamplingBottleneck(32 // divisor, 64 // divisor, padding=1)
+        self.regular2_1 = RegularBottleneck(64 // divisor, padding=1)
+        self.dilated2_2 = RegularBottleneck(64 // divisor, dilation=2, padding=2)
+        self.asymmetric2_3 = RegularBottleneck(64 // divisor, kernel_size=5, padding=2, asymmetric=True)
+        self.dilated2_4 = RegularBottleneck(64 // divisor, dilation=4, padding=4)
+        self.regular2_5 = RegularBottleneck(64 // divisor, padding=1)
+        self.dilated2_6 = RegularBottleneck(64 // divisor, dilation=8, padding=8)
+        self.asymmetric2_7 = RegularBottleneck(64 // divisor, kernel_size=5, asymmetric=True, padding=2)
+        self.dilated2_8 = RegularBottleneck(64 // divisor, dilation=16, padding=16)
 
         '''
         # Stage 3 - Encoder
@@ -559,27 +547,27 @@ class LaneNet0508(nn.Module):
         '''
 
         # Stage 4 - Decoder
-        self.upsample4_0 = UpsamplingBottleneck(64, 32, padding=1)
-        self.regular4_1 = RegularBottleneck(32, padding=1)
-        self.regular4_2 = RegularBottleneck(32, padding=1)
+        self.upsample4_0 = UpsamplingBottleneck(64 // divisor, 32 // divisor, padding=1)
+        self.regular4_1 = RegularBottleneck(32 // divisor, padding=1)
+        self.regular4_2 = RegularBottleneck(32 // divisor, padding=1)
 
-        #deconv1_down
+        # deconv1_down
         self.conv_out = nn.Sequential(
-            nn.Conv2d(32, 32, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(32),
+            nn.Conv2d(32 // divisor, 32 // divisor, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(32 // divisor),
             nn.ReLU(),
         )
 
-        #deconv2
+        # deconv2
         self.deconv2 = nn.Sequential(
-            nn.ConvTranspose2d(32, 32, kernel_size=2, stride=2, padding=0, bias=True),
-            nn.BatchNorm2d(32),
+            nn.ConvTranspose2d(32 // divisor, 32 // divisor, kernel_size=2, stride=2, padding=0, bias=True),
+            nn.BatchNorm2d(32 // divisor),
             nn.ReLU()  # (nB, 128, 36, 100)
         )
 
-        #deconv3
+        # deconv3
         self.deconv3 = nn.Sequential(
-            nn.ConvTranspose2d(32, num_classes, kernel_size=2, stride=2, padding=0, bias=True),
+            nn.ConvTranspose2d(32 // divisor, num_classes, kernel_size=2, stride=2, padding=0, bias=True),
         )
 
         '''
@@ -637,23 +625,28 @@ class LaneNet0508(nn.Module):
 
         # Stage 5 - Decoder
         x = self.conv_out(x)
+        # print('ss', x.shape)
         x = self.deconv2(x)
+        # print('ss', x.shape)
         x = self.deconv3(x)
-
+        # print('ss', x.shape)
         return x
 
 
-if __name__=="__main__":
-    model = LaneNet0508(num_classes=2)
+if __name__ == '__main__':
+    from ptflops import get_model_complexity_info
 
-    input = torch.randn([10, 3, 256, 128])
+    down = 2
+    divisor = 1
+    h = int(1080 / down) // 16 * 16
+    w = int(1920 / down) // 16 * 16
+    h=528
+    w=960
+    print(h, w)
 
-
-
-    # from thop import profile
-    # macs, params = profile(model, inputs=(input,))
-    # from thop import clever_format
-    # # macs, params = clever_format([flops, params], "%.3f")
-
-    y = model(input)
-    print(y.shape)
+    net = LaneNet0508(num_classes=4, divisor=divisor).cuda()
+    # image = (3, h, w)
+    # f, p = get_model_complexity_info(net, image, as_strings=True, print_per_layer_stat=False, verbose=False)
+    # print(f, p)
+    out = net(torch.randn(1, 3, h, w).cuda())
+    print(out.shape)
