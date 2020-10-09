@@ -12,16 +12,28 @@ from Nets.SFNet import sf_resnet50, sf_resnet18_mod
 from Nets.LaneNet_CBAM import LaneNet_CBAM
 import torch
 import torch.nn as nn
-from torchstat import stat
+
 from thop import profile, clever_format
 from ptflops import get_model_complexity_info
 import torchvision.models as models
 from torchsummary import summary
+from Nets.LEDNet import LEDNet
+from Nets.LEDNet2 import LEDnet2
+from lr_scheduler import *
+
+
+def get_lr_scheduler(optimizer, max_iters, sch_name):
+    if sch_name == 'warmup_poly':
+        return WarmupPolyLR(optimizer, max_iters=max_iters, power=0.9, warmup_factor=float(1.0/3), warmup_iters=0, warmup_method='linear')
+    else:
+        return None
 
 
 def get_optimizer(net, optim_name):
     if optim_name == 'adam':
         optimizer = torch.optim.Adam(net.parameters())
+    elif optim_name == 'sgd':
+        optimizer = torch.optim.SGD(net.parameters(), lr=1e-4, momentum=0.9, weight_decay=1e-4)
     else:
         optimizer = torch.optim.Adam(net.parameters())
     return optimizer
@@ -80,6 +92,18 @@ def choose_net(name, out_channels):
     elif name == 'mobilenetv3_small_bifpn':
         from Nets.mobilenetv3 import MobileNetV3_Small_BiFPN_Seg
         return MobileNetV3_Small_BiFPN_Seg(num_classes=out_channels, attention=False)
+    elif name == 'lednet':
+        return LEDNet(classes=out_channels, divisor=1)
+    elif name == 'lednet_2':
+        return LEDNet(classes=out_channels, divisor=2)
+    elif name == 'lednet_4':
+        return LEDNet(classes=out_channels, divisor=4)
+    elif name == 'lednet2':
+        return LEDnet2(num_classes=out_channels, divisor=1)
+    elif name == 'lednet2_2':
+        return LEDnet2(num_classes=out_channels, divisor=2)
+    elif name == 'lednet2_4':
+        return LEDnet2(num_classes=out_channels, divisor=4)
 
     elif name == 'enet_2':
         return ENet(num_classes=out_channels, divisor=2)
@@ -91,6 +115,12 @@ def choose_net(name, out_channels):
         return DeepLabV3Plus(num_classes=out_channels, divisor=16)
     elif name == 'sfnet18_16':
         return sf_resnet18_mod()
+    elif name == 'dfanet':
+        from Nets.dfanet import DFANet
+        ch_cfg = [[8, 48, 96],
+                  [240, 144, 288],
+                  [240, 144, 288]]
+        return DFANet(ch_cfg, 64, num_classes=out_channels)
 
 
 if __name__ == '__main__':

@@ -160,19 +160,95 @@ def create_hard_neg():
     #     mask.save(os.path.join(save_mask_dir, name[:-3] + 'png'))
     #     assert image.size == mask.size
 
-    neg_images_source_dir = '/workspace/DATA/coco/green_train'
-    save_root = '/workspace/DATA/adas/road0814'
-    neg_images_dir = save_root + '/neg/images'
-    neg_labels_dir = save_root + '/neg/labels'
+    neg_images_source_dir = '/workspace/negs_from_videos0904'
+    save_root = '/workspace/DATA/zhatu/zhatu0814'
+    neg_images_dir = save_root + '/train_withneg2/images'
+    neg_labels_dir = save_root + '/train_withneg2/labels'
     mkdir(neg_images_dir)
     mkdir(neg_labels_dir)
-    for neg_img_path in Path(neg_images_source_dir).glob('*.jpg'):
+    negs = [neg_img_path for neg_img_path in Path(neg_images_source_dir).glob('*.jpg')]
+    random.shuffle(negs)
+    num = 14718
+    if len(negs) >= num:
+        negs = negs[:num]
+    for neg_img_path in negs:
         neg_img = cv2.imread(str(neg_img_path))
         neg_mask = np.zeros(neg_img.shape[:2], dtype='uint8')
         shutil.copy(str(neg_img_path), neg_images_dir)
         neg_mask = Image.fromarray(neg_mask.astype('uint8')).convert('L')
         neg_mask.save(os.path.join(neg_labels_dir, neg_img_path.name[:-3] + 'png'))
         print('Saved from:', neg_img_path)
+
+def create_dataset_withneg(ratio_bsd=0.33, ratio_adas=0.33, ratio_seg=0.33):
+    train_set = '/workspace/DATA/zhatu/zhatu0905/train'
+
+    new_images = '/workspace/DATA/zhatu/zhatu0905/train_a'+str(int(ratio_adas*100))+'_b'+str(int(ratio_bsd*100))+'_s'+str(int(ratio_seg*100))+'/images'
+    new_labels = '/workspace/DATA/zhatu/zhatu0905/train_a'+str(int(ratio_adas*100))+'_b'+str(int(ratio_bsd*100))+'_s'+str(int(ratio_seg*100))+'/labels'
+    mkdir(new_images)
+    mkdir(new_labels)
+
+    bsd_images = '/workspace/DATA/zhatu/negs/neg_from_bsd'
+    adas_images = '/workspace/DATA/zhatu/negs/neg_from_adas'
+    seg_images = '/workspace/DATA/zhatu/negs/neg_from_seg0904'
+
+    def cp_neg_to_dst(neg_dir, num):
+        paths = [i for i in Path(neg_dir).glob('*.jpg')]
+        random.shuffle(paths)
+        paths = paths[:num]
+        for path in paths:
+            shutil.copy(str(path), new_images)
+
+            neg_mask = np.zeros((1080, 1920), dtype='uint8')
+            neg_mask = Image.fromarray(neg_mask.astype('uint8')).convert('L')
+            neg_mask.save(os.path.join(new_labels, path.name[:-3] + 'png'))
+
+
+    pos_num = len([i for i in Path(train_set + '/labels').glob('*.png')])
+
+    cp_neg_to_dst(bsd_images, int(pos_num*ratio_bsd))
+    cp_neg_to_dst(adas_images, int(pos_num * ratio_adas))
+    cp_neg_to_dst(seg_images, int(pos_num * ratio_seg))
+
+    for path in Path(train_set + '/labels').glob('*.png'):
+        shutil.copy(str(path), new_labels)
+        shutil.copy(str(path).replace('labels', 'images').replace('png', 'jpg'), new_images)
+
+
+
+
+
+
+
+
+def split_out_negs_from_train_withneg():
+    labels_dir = '/workspace/DATA/zhatu/zhatu0814/seg/train_withneg/labels'
+
+    jsons_path = '/workspace/DATA/zhatu/zhatu0814/labelme/V1.1'
+    names = [i.name[:-4] for i in Path(jsons_path).glob('*.json')]
+
+    save_images_dir = '/workspace/DATA/zhatu/zhatu0814/seg/train/images'
+    save_labels_dir = '/workspace/DATA/zhatu/zhatu0814/seg/train/labels'
+    mkdir(save_images_dir)
+    mkdir(save_labels_dir)
+
+    save_images_dir2 = '/workspace/DATA/zhatu/zhatu0814/seg/negs/images'
+    save_labels_dir2 = '/workspace/DATA/zhatu/zhatu0814/seg/negs/labels'
+    mkdir(save_images_dir2)
+    mkdir(save_labels_dir2)
+
+    for path in Path(labels_dir).glob('*.png'):
+        if path.name[:-3] in names:
+            shutil.copy(str(path), save_labels_dir)
+            shutil.copy(str(path).replace('labels', 'images').replace('png', 'jpg'), save_images_dir)
+        else:
+            shutil.copy(str(path), save_labels_dir2)
+            shutil.copy(str(path).replace('labels', 'images').replace('png', 'jpg'), save_images_dir2)
+
+# def merge_new_negs():
+# #     # neg_image_dir1 = '/workspace/DATA/zhatu/zhatu0814/seg/negs/images'
+# #     neg_image_dir2 = '/workspace/negs_from_videos0904'
+# #     pos_num = 14718
+
 
 
 def find_green_images(save_dir='/workspace/DATA/coco/green_train', source_dir='/workspace/DATA/coco/coco/train2017', resize=False):
@@ -409,6 +485,8 @@ def augmentation(label_dir):
 
 if __name__ == '__main__':
     pass
+    create_dataset_withneg()
+    # split_out_negs_from_train_withneg()
     # del_tmp_files('./Results')
     # merge_images_into_video()
     # labelme_jsons_to_masks2()
@@ -420,14 +498,14 @@ if __name__ == '__main__':
     # check('/workspace/DATA/adas/road0814/test/labels')
     # augmentation('/workspace/DATA/adas/roadside0813/train_aug/labels')
 
-    # class_info = {'adopt_classes': ('roads',), 'dispute_classes': ('zebra_crs', 'zebra-crs'), 'top_classes': ('roadside',)}
-    image_dir = '/workspace/DATA/adas/road0717/images'
-    json_dir = '/workspace/DATA/adas/road0717/done'
-    save_root = '/workspace/DATA/adas/road0814_2'
-    # convert_labelme_to_masks_super(class_info=class_info, image_dir=image_dir, json_dir=json_dir, save_root=save_root)
-    neg_image_dir = '/workspace/DATA/coco/green_train'
-    mask_dir = '/workspace/DATA/adas/road0814/all_masks'
-    split_dataset_and_add_neg(image_dir=image_dir, mask_dir=mask_dir, save_root=save_root, neg_image_dir=None)
+    # # class_info = {'adopt_classes': ('roads',), 'dispute_classes': ('zebra_crs', 'zebra-crs'), 'top_classes': ('roadside',)}
+    # image_dir = '/workspace/DATA/adas/road0717/images'
+    # json_dir = '/workspace/DATA/adas/road0717/done'
+    # save_root = '/workspace/DATA/adas/road0814_2'
+    # # convert_labelme_to_masks_super(class_info=class_info, image_dir=image_dir, json_dir=json_dir, save_root=save_root)
+    # neg_image_dir = '/workspace/DATA/coco/green_train'
+    # mask_dir = '/workspace/DATA/adas/road0814/all_masks'
+    # split_dataset_and_add_neg(image_dir=image_dir, mask_dir=mask_dir, save_root=save_root, neg_image_dir=None)
 
     # class_info = {'adopt_classes': ('soil',), 'dispute_classes': ('soil', 'little soil'), 'top_classes': ('soil',)}
     # image_dir = '/workspace/DATA/zhatu/zhatu0814_api/image'

@@ -3,7 +3,8 @@ from argparse import ArgumentParser
 import torch
 import json
 from choices import choose_net
-from predictor import qualitative_results_from_dataset, eval_dataset_full, predict_videos, predict_images
+from predictor import qualitative_results_from_dataset, eval_dataset_full, predict_videos, predict_images, \
+    save_all_negs_from_videos, get_score_info, get_pos_neg_thresh_curves, get_curves_object_detection
 from dataset import SegDataset, get_class_weights
 from torch.utils.data import DataLoader
 import cv2
@@ -78,7 +79,7 @@ def do_test(mode, args):
         return
     print('Loading:', pt_path)
     net = choose_net(args.net_name, args.out_channels).cuda()
-    net.load_state_dict(torch.load(pt_path))
+    net.load_state_dict(torch.load(pt_path, map_location={'cuda:5':'cuda:0'}))
     net.eval()
     test_loader, class_weights = None, None
     if mode == 0 or mode == 1:
@@ -96,11 +97,22 @@ def do_test(mode, args):
         predict_videos(net, args, partial=True, save_vid=False, dst_size=(960, 540), save_dir=pt_dir)
 
     elif mode == 3:
-        predict_videos(net, args, partial=False, save_vid=True, dst_size=(960, 540), save_dir='/workspace/')
+        predict_videos(net, args, partial=False, save_vid=True, dst_size=(960, 540), save_dir='/workspace/lanenet_mod_cbam_withneg/')
 
     elif mode == 4:
-        predict_images(net, args, dst_size=(960, 540), save_dir='/workspace/zhatu/')
+        predict_images(net, args, dst_size=(960, 540), save_dir='/workspace/tmp/')
 
+    elif mode == 5:
+        save_all_negs_from_videos(net, args, save_dir='/workspace/negs_from_videos0904_more_negs/')
+
+    elif mode == 6:
+        get_score_info(net, args, save_dir=pt_dir, type='neg')
+
+    elif mode == 7:
+        get_pos_neg_thresh_curves(net, args, save_dir=pt_dir)
+
+    elif mode == 8:
+        get_curves_object_detection(net, args, save_dir=pt_dir)
 
 def do_search(args, task=2):
     args.pt_root = './Results/'
@@ -111,32 +123,41 @@ def do_search(args, task=2):
         args.test_set = '/workspace/DATA/adas/road0814/test'
         args.test_images = '/workspace/DATA/adas/hard_frames'
         args.out_channels = 2
-        pt_dirs = [i.name for i in Path(args.pt_root).iterdir() if i.is_dir() and 'road' in i.name]
+        pt_dirs = [i.name for i in Path(args.pt_root).iterdir() if i.is_dir() and 'road0819' in i.name]
 
     elif task == 1:
         args.test_videos = '/workspace/DATA/adas'
         args.test_set = '/workspace/DATA/adas/roadside0813/test'
         args.test_images = '/workspace/DATA/adas/hard_frames'
         args.out_channels = 3
-        pt_dirs = [i.name for i in Path(args.pt_root).iterdir() if i.is_dir() and 'roadside0817' in i.name]
+        pt_dirs = [i.name for i in Path(args.pt_root).iterdir() if i.is_dir() and 'roadside' in i.name]
 
     elif task == 2:
-        args.test_videos = '/workspace/DATA/zhatu/videos/0807'
-        args.test_set = '/workspace/DATA/zhatu/zhatu0814/test'
-        args.test_images = '/workspace/DATA/zhatu/videos/0807/hard_frames'
+        args.test_videos = '/workspace/DATA/zhatu/videos/0904'
+        args.test_set = '/workspace/DATA/zhatu/zhatu0905/test'
+        # args.test_videos = '/workspace/DATA/zhatu/tiny'
+        # args.test_set = '/workspace/DATA/zhatu/tiny/test'
+        args.test_images = '/workspace/DATA/zhatu/videos/0829/hard_frames'
         args.out_channels = 2
-        pt_dirs = [i.name for i in Path(args.pt_root).iterdir() if i.is_dir() and 'zhatu' in i.name]
+        pt_dirs = [i.name for i in Path(args.pt_root).iterdir() if i.is_dir() and 'Car' in i.name]
 
-    modes = [4]
+    # modes = [8]  # 目标检测方法的曲线
+    # modes = [7]  # 正负样本阈值曲线
+    # modes = [6, 1]  # 来自数据集的分数信息
+    # modes = [5]  # 来自视频的负样本
+    modes = [3]  # 真实视频全检测
+    # modes = [0]  # 测试集定量指标
+    # modes = [1]  # 获得测试集的结果图
     for mode in modes:
         for pt_dir in pt_dirs:
             args.pt_dir = pt_dir
             with torch.cuda.device(0):
-                try:
-                    do_test(mode, args)
-                except:
-                    print('Error happened!')
-                continue
+                do_test(mode, args)
+                # try:
+                #     do_test(mode, args)
+                # except:
+                #     print('Error happened! ', vars(args))
+                # continue
 
 
 def do_diff(args, thresh_num=6, save_root='./temp_files', task=0):
@@ -217,7 +238,7 @@ def do_diff(args, thresh_num=6, save_root='./temp_files', task=0):
             cv2.imwrite(path, diff_show)
 
 
-def write_excel_for_search(root='./Results', suffix='zhatu'):
+def write_excel_for_search(root='./Results/', suffix='roadside'):
     workbook = xlwt.Workbook(encoding='utf-8')
     worksheet = workbook.add_sheet(suffix)
     worksheet.write(0, 0, 'id')

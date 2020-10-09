@@ -349,3 +349,25 @@ def wide_resnet101_2(pretrained=False, progress=True, **kwargs):
     kwargs['width_per_group'] = 64 * 2
     return _resnet('wide_resnet101_2', Bottleneck, [3, 4, 23, 3],
                    pretrained, progress, **kwargs)
+
+if __name__ == '__main__':
+    from ptflops import get_model_complexity_info
+
+    down = 3
+    divisor = 1
+    h = int(1080 / down) // 16 * 16
+    w = int(1920 / down) // 16 * 16
+
+    h=224
+    w=224
+    net = resnet18().cuda()
+    image = (3, h, w)
+    f, p = get_model_complexity_info(net, image, as_strings=True, print_per_layer_stat=False, verbose=False)
+    print(f, p)
+    out = net(torch.randn(1, 3, h, w).cuda())
+    print(out.shape)
+
+    from torchstat import stat
+    import torchvision.models as models
+    model = models.resnet18()
+    stat(model, (3, 224, 224))

@@ -636,17 +636,20 @@ class LaneNet0508(nn.Module):
 if __name__ == '__main__':
     from ptflops import get_model_complexity_info
 
-    down = 2
-    divisor = 1
-    h = int(1080 / down) // 16 * 16
-    w = int(1920 / down) // 16 * 16
-    h=528
-    w=960
+    num_classes = 2  # road=2, roadside=3
+
+    divisor = 2
+
+    # down = 2
+    # h = int(1080 / down) // 16 * 16
+    # w = int(1920 / down) // 16 * 16
+    h = 528
+    w = 960
     print(h, w)
 
-    net = LaneNet0508(num_classes=4, divisor=divisor).cuda()
-    # image = (3, h, w)
-    # f, p = get_model_complexity_info(net, image, as_strings=True, print_per_layer_stat=False, verbose=False)
-    # print(f, p)
+    net = LaneNet0508(num_classes=num_classes, divisor=divisor).cuda()
+    image = (3, h, w)
+    f, p = get_model_complexity_info(net, image, as_strings=True, print_per_layer_stat=False, verbose=False)
+    print(f, p)
     out = net(torch.randn(1, 3, h, w).cuda())
     print(out.shape)

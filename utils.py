@@ -221,8 +221,8 @@ def select_frames_from_videos(test_videos):
         for idx in range(0, total_frame_num - 1, stride):  # 抛弃最后一帧才能有效保存视频
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             _, frame = cap.read()
-            cv2.imwrite('/workspace/DATA/zhatu/videos/0807/' + name[:-4] + str(idx) + '.jpg', frame)
+            cv2.imwrite('/workspace/DATA/zhatu/videos/previous/' + name[:-4] + str(idx) + '.jpg', frame)
 
 
 if __name__ == "__main__":
-    select_frames_from_videos('/workspace/DATA/zhatu/videos/0807')
+    select_frames_from_videos('/workspace/DATA/zhatu/videos/previous')
